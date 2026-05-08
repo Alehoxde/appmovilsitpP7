@@ -1,5 +1,4 @@
-﻿// app/mapa.native.tsx
-import * as turf from '@turf/turf';
+﻿import * as turf from '@turf/turf';
 import * as Location from 'expo-location';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -12,19 +11,141 @@ import { rutas } from '@/assets/data/rutas-data';
 type Paradero = typeof paraderos[number];
 type Ruta = typeof rutas[number];
 
+type Coordenada = {
+  latitude: number;
+  longitude: number;
+};
+
+type ParaderoEnRuta = {
+  paradero: Paradero;
+  onRouteDistanceKm: number;
+  distToRouteKm: number;
+};
+
+type RutaVial = {
+  coordinates: Coordenada[];
+  distance: number;
+  duration: number;
+};
+
+type PlanSITP = {
+  route: Ruta;
+  board: Paradero;
+  alight: Paradero;
+  stops: Paradero[];
+  busSegment: Coordenada[];
+  walkToBoardMeters: number;
+  walkToDestinationMeters: number;
+  busDistanceMeters: number;
+  totalDistanceMeters: number;
+  estimatedTimeMinutes: number;
+  arrivalTime: string;
+  score: number;
+};
+
+const WALKING_METERS_PER_MINUTE = 75;
+const BUS_METERS_PER_MINUTE = 280;
+const WAITING_TIME_MINUTES = 4;
+const CANDIDATES_PER_ROUTE = 5;
+const MAX_STOPS_TO_MARK = 25;
+
+const formatDistance = (meters: number) => {
+  if (meters >= 1000) return `${(meters / 1000).toFixed(2)} km`;
+  return `${Math.round(meters)} m`;
+};
+
+const getArrivalTimeFromMinutes = (minutes: number) => {
+  const arrival = new Date(Date.now() + minutes * 60000);
+  return `${arrival.getHours().toString().padStart(2, '0')}:${arrival.getMinutes().toString().padStart(2, '0')}`;
+};
+
+const getDistanceMeters = (a: Coordenada, b: Coordenada) => {
+  return turf.distance(
+    turf.point([a.longitude, a.latitude]),
+    turf.point([b.longitude, b.latitude]),
+    { units: 'kilometers' }
+  ) * 1000;
+};
+
+const getPathDistanceMeters = (coords: Coordenada[]) => {
+  if (coords.length < 2) return 0;
+
+  return turf.length(
+    turf.lineString(coords.map(coord => [coord.longitude, coord.latitude])),
+    { units: 'kilometers' }
+  ) * 1000;
+};
+
+const getClosestRouteCoordIndex = (coords: Coordenada[], point: Coordenada) => {
+  let closestIndex = 0;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  coords.forEach((coord, index) => {
+    const distance = getDistanceMeters(coord, point);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestIndex = index;
+    }
+  });
+
+  return closestIndex;
+};
+
+const getRouteSegmentBetweenStops = (route: Ruta, board: Paradero, alight: Paradero) => {
+  const startIndex = getClosestRouteCoordIndex(route.coords, board.latlng);
+  const endIndex = getClosestRouteCoordIndex(route.coords, alight.latlng);
+  const from = Math.min(startIndex, endIndex);
+  const to = Math.max(startIndex, endIndex);
+  const segment = route.coords.slice(from, to + 1);
+
+  if (segment.length >= 2) return segment;
+
+  return [board.latlng, alight.latlng];
+};
+
+// Ruta vial normal con OSRM. Se usa para dibujar los tramos a pie por calles.
+const getRutaVialOSRM = async (origen: Coordenada, destino: Coordenada): Promise<RutaVial | null> => {
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${origen.longitude},${origen.latitude};${destino.longitude},${destino.latitude}?overview=full&geometries=geojson`;
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (data.code === 'Ok' && data.routes?.[0]) {
+      const route = data.routes[0];
+
+      return {
+        coordinates: route.geometry.coordinates.map((coordinate: [number, number]) => ({
+          latitude: coordinate[1],
+          longitude: coordinate[0],
+        })),
+        distance: route.distance,
+        duration: route.duration,
+      };
+    }
+
+    return null;
+  } catch (error) {
+    console.error('Error al conectar con OSRM:', error);
+    return null;
+  }
+};
+
 export default function MapaScreen() {
   const [selectedLocalidadId, setSelectedLocalidadId] = useState<number | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [searchModalVisible, setSearchModalVisible] = useState(false);
   const [destinationQuery, setDestinationQuery] = useState('');
   const [selectedDestination, setSelectedDestination] = useState<Paradero | null>(null);
-  const [recommendedRoute, setRecommendedRoute] = useState<Ruta | null>(null);
-  const [routeSegment, setRouteSegment] = useState<typeof rutas[0]['coords']>([]);
-  const [boardingStop, setBoardingStop] = useState<Paradero | null>(null);
-  const [alightingStop, setAlightingStop] = useState<Paradero | null>(null);
-  const [estimatedTime, setEstimatedTime] = useState<number | null>(null);
   const [currentLocation, setCurrentLocation] = useState<Location.LocationObject | null>(null);
   const [selectedLocalidadInModal, setSelectedLocalidadInModal] = useState<number | null>(null);
+  const [isLoadingRoute, setIsLoadingRoute] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+
+  const [sitpPlan, setSitpPlan] = useState<PlanSITP | null>(null);
+  const [walkToBoardSegment, setWalkToBoardSegment] = useState<Coordenada[]>([]);
+  const [busSegment, setBusSegment] = useState<Coordenada[]>([]);
+  const [walkToDestinationSegment, setWalkToDestinationSegment] = useState<Coordenada[]>([]);
+
   const mapRef = useRef<MapView | null>(null);
 
   const regionBogota = useMemo(
@@ -43,17 +164,12 @@ export default function MapaScreen() {
   );
 
   const paraderosFiltrados = useMemo(
-    () =>
-      selectedLocalidad
-        ? paraderos.filter(paradero => paradero.localidad === selectedLocalidad.id)
-        : [],
+    () => selectedLocalidad ? paraderos.filter(paradero => paradero.localidad === selectedLocalidad.id) : [],
     [selectedLocalidad]
   );
 
   const regionLocalidad = useMemo(() => {
-    if (!selectedLocalidad) {
-      return regionBogota;
-    }
+    if (!selectedLocalidad) return regionBogota;
 
     const latitudes = selectedLocalidad.coords.map(coord => coord.latitude);
     const longitudes = selectedLocalidad.coords.map(coord => coord.longitude);
@@ -66,41 +182,19 @@ export default function MapaScreen() {
     };
   }, [selectedLocalidad, regionBogota]);
 
-  const paraderosInModal = useMemo(
-    () => selectedLocalidadInModal ? paraderos.filter(p => p.localidad === selectedLocalidadInModal) : [],
-    [selectedLocalidadInModal]
-  );
-
-  const paraderosInRoute = useMemo(() => {
-    if (!recommendedRoute || !boardingStop || !alightingStop) return [];
-
-    const line = turf.lineString(recommendedRoute.coords.map(c => [c.longitude, c.latitude]));
-    const boardingPoint = turf.point([boardingStop.latlng.longitude, boardingStop.latlng.latitude]);
-    const alightingPoint = turf.point([alightingStop.latlng.longitude, alightingStop.latlng.latitude]);
-
-    const boardingOnLine = turf.nearestPointOnLine(line, boardingPoint);
-    const alightingOnLine = turf.nearestPointOnLine(line, alightingPoint);
-
-    const boardingDist = turf.distance(turf.point([recommendedRoute.coords[0].longitude, recommendedRoute.coords[0].latitude]), boardingOnLine, { units: 'kilometers' });
-    const alightingDist = turf.distance(turf.point([recommendedRoute.coords[0].longitude, recommendedRoute.coords[0].latitude]), alightingOnLine, { units: 'kilometers' });
-
-    const minDist = Math.min(boardingDist, alightingDist);
-    const maxDist = Math.max(boardingDist, alightingDist);
-
-    return paraderos.filter(paradero => {
-      if (paradero.id === boardingStop.id || paradero.id === alightingStop.id) return false;
-      
-      const pPoint = turf.point([paradero.latlng.longitude, paradero.latlng.latitude]);
-      const pOnLine = turf.nearestPointOnLine(line, pPoint);
-      const pDist = turf.distance(turf.point([recommendedRoute.coords[0].longitude, recommendedRoute.coords[0].latitude]), pOnLine, { units: 'kilometers' });
-      
-      return pDist > minDist && pDist < maxDist && turf.distance(pPoint, pOnLine, { units: 'kilometers' }) < 0.3;
-    });
-  }, [recommendedRoute, boardingStop, alightingStop]);
-
   const searchParaderos = useMemo(
     () => (selectedLocalidad ? paraderosFiltrados : paraderos),
     [selectedLocalidad, paraderosFiltrados]
+  );
+
+  const routeStopIds = useMemo(
+    () => new Set((sitpPlan?.stops ?? []).map(stop => stop.id)),
+    [sitpPlan]
+  );
+
+  const paraderosVisibles = useMemo(
+    () => paraderosFiltrados.filter(paradero => !routeStopIds.has(paradero.id)),
+    [paraderosFiltrados, routeStopIds]
   );
 
   useEffect(() => {
@@ -110,186 +204,275 @@ export default function MapaScreen() {
   }, [selectedLocalidad, regionLocalidad]);
 
   useEffect(() => {
-    (async () => {
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permiso denegado', 'Se necesita acceso a la ubicación para recomendaciones de rutas.');
-        return;
-      }
-      let location = await Location.getCurrentPositionAsync({});
-      setCurrentLocation(location);
-    })();
+    handleLocateUser(false);
   }, []);
 
-  const getNearestParaderoForRoute = (route: Ruta, target: [number, number]) => {
-    const routeLine = turf.lineString(route.coords.map(coord => [coord.longitude, coord.latitude]));
-    const nearbyStops = paraderos
-      .map(paradero => {
-        const stopPoint = turf.point([paradero.latlng.longitude, paradero.latlng.latitude]);
-        const nearestOnRoute = turf.nearestPointOnLine(routeLine, stopPoint);
-        const distToRoute = turf.distance(stopPoint, nearestOnRoute, { units: 'kilometers' });
-        const targetPoint = turf.point(target);
-        const distToTarget = turf.distance(stopPoint, targetPoint, { units: 'kilometers' });
-        return { paradero, distToRoute, distToTarget };
-      })
-      .filter(item => item.distToRoute <= 0.4);
+  const handleLocateUser = async (showErrorAlert = true) => {
+    try {
+      setIsLocating(true);
 
-    if (nearbyStops.length === 0) {
-      return paraderos
-        .map(paradero => ({
-          paradero,
-          distToTarget: turf.distance(
-            turf.point([paradero.latlng.longitude, paradero.latlng.latitude]),
-            turf.point(target),
-            { units: 'kilometers' }
-          ),
-        }))
-        .sort((a, b) => a.distToTarget - b.distToTarget)[0]?.paradero ?? null;
-    }
+      const { status } = await Location.requestForegroundPermissionsAsync();
 
-    return nearbyStops.sort((a, b) => a.distToTarget - b.distToTarget)[0].paradero;
-  };
-
-  const calculateBestRoute = (origin: { latitude: number; longitude: number }, destination: { latitude: number; longitude: number }) => {
-    const originPoint = turf.point([origin.longitude, origin.latitude]);
-    const destPoint = turf.point([destination.longitude, destination.latitude]);
-
-    const scoredRoutes = rutas.map(route => {
-      const line = turf.lineString(route.coords.map(coord => [coord.longitude, coord.latitude]));
-      const nearestOrigin = turf.nearestPointOnLine(line, originPoint);
-      const nearestDest = turf.nearestPointOnLine(line, destPoint);
-      const originDist = turf.distance(originPoint, nearestOrigin, { units: 'kilometers' });
-      const destDist = turf.distance(destPoint, nearestDest, { units: 'kilometers' });
-      const score = originDist + destDist;
-      return { route, score, originDist, destDist, line, nearestOrigin, nearestDest };
-    });
-
-    const best = scoredRoutes.sort((a, b) => a.score - b.score)[0];
-    if (!best) return null;
-
-    const boarding = getNearestParaderoForRoute(best.route, [origin.longitude, origin.latitude]);
-    const alighting = getNearestParaderoForRoute(best.route, [destination.longitude, destination.latitude]);
-
-    if (!boarding || !alighting) return null;
-
-    // Crear segmento de ruta entre paraderos
-    const boardingPoint = turf.point([boarding.latlng.longitude, boarding.latlng.latitude]);
-    const alightingPoint = turf.point([alighting.latlng.longitude, alighting.latlng.latitude]);
-    
-    // Obtener índices de los puntos más cercanos en la ruta
-    const routeCoords = best.route.coords.map(c => [c.longitude, c.latitude]);
-    const boardingOnLine = turf.nearestPointOnLine(best.line, boardingPoint);
-    const alightingOnLine = turf.nearestPointOnLine(best.line, alightingPoint);
-    
-    const boardingDist = turf.distance(turf.point(routeCoords[0]), boardingOnLine, { units: 'kilometers' });
-    const alightingDist = turf.distance(turf.point(routeCoords[0]), alightingOnLine, { units: 'kilometers' });
-    
-    // Construir el segmento de ruta entre las paradas
-    let routeSegment: typeof best.route.coords = [];
-    let accumulatedDistance = 0;
-    const minDist = Math.min(boardingDist, alightingDist);
-    const maxDist = Math.max(boardingDist, alightingDist);
-    
-    for (let i = 0; i < routeCoords.length - 1; i++) {
-      const segmentStart = turf.point(routeCoords[i]);
-      const segmentEnd = turf.point(routeCoords[i + 1]);
-      const segmentLength = turf.distance(segmentStart, segmentEnd, { units: 'kilometers' });
-      
-      if (accumulatedDistance + segmentLength >= minDist && accumulatedDistance <= maxDist) {
-        routeSegment.push(best.route.coords[i]);
-        if (accumulatedDistance + segmentLength >= maxDist) {
-          routeSegment.push(best.route.coords[i + 1]);
-          break;
+      if (status !== 'granted') {
+        if (showErrorAlert) {
+          Alert.alert('Permiso denegado', 'Activa el permiso de ubicación para localizarte en el mapa.');
         }
-      }
-      accumulatedDistance += segmentLength;
-    }
-
-    // Si no hay segmento válido, usar la ruta completa
-    if (routeSegment.length < 2) {
-      routeSegment = best.route.coords;
-    }
-
-    // Calcular distancia solo del segmento de bus entre paradas
-    const segmentLine = turf.lineString(routeSegment.map(c => [c.longitude, c.latitude]));
-    const busSegmentDistance = turf.length(segmentLine, { units: 'kilometers' });
-
-    // Estimar tiempos:
-    // Caminar a la parada: ~1.4 m/s (5 km/h)
-    // Bus: ~3 m/s (11 km/h en Bogotá, SITP es lento)
-    // Caminar desde parada al destino: ~1.4 m/s (5 km/h)
-    const walkingSpeed = 5; // km/h
-    const busSpeed = 11; // km/h
-    const walkToBoardingTime = (best.originDist / walkingSpeed) * 60; // en minutos
-    const busTime = (busSegmentDistance / busSpeed) * 60; // en minutos - SOLO segmento entre paradas
-    const walkFromAlightingTime = (best.destDist / walkingSpeed) * 60; // en minutos
-    const totalTime = Math.round(walkToBoardingTime + busTime + walkFromAlightingTime);
-
-    return {
-      route: best.route,
-      routeSegment,
-      board: boarding,
-      alight: alighting,
-      score: best.score,
-      originDist: best.originDist,
-      destDist: best.destDist,
-      busSegmentDistance,
-      totalTime,
-    };
-  };
-
-  const handleSearchRoute = () => {
-    if (!currentLocation) {
-      Alert.alert('Ubicación no disponible', 'No se pudo obtener tu ubicación actual.');
-      return;
-    }
-
-    if (selectedDestination) {
-      const plan = calculateBestRoute(currentLocation.coords, selectedDestination.latlng);
-      if (!plan) {
-        Alert.alert('Ruta no encontrada', 'No se encontró una ruta adecuada para el destino.');
         return;
       }
 
-      setRecommendedRoute(plan.route);
-      setRouteSegment(plan.routeSegment);
-      setBoardingStop(plan.board);
-      setAlightingStop(plan.alight);
-      setEstimatedTime(plan.totalTime);
-      setSearchModalVisible(false);
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
 
-      if (mapRef.current) {
-        mapRef.current.animateToRegion({
-          latitude: plan.board?.latlng.latitude ?? selectedDestination.latlng.latitude,
-          longitude: plan.board?.latlng.longitude ?? selectedDestination.latlng.longitude,
-          latitudeDelta: 0.05,
-          longitudeDelta: 0.05,
-        }, 600);
+      setCurrentLocation(location);
+
+      mapRef.current?.animateToRegion(
+        {
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+          latitudeDelta: 0.015,
+          longitudeDelta: 0.015,
+        },
+        700
+      );
+    } catch (error) {
+      console.error('Error obteniendo ubicación:', error);
+      if (showErrorAlert) {
+        Alert.alert('Error', 'No se pudo obtener tu ubicación actual.');
       }
+    } finally {
+      setIsLocating(false);
     }
   };
 
-  const handleGoToCurrentLocation = () => {
+  const getRouteStops = (route: Ruta): ParaderoEnRuta[] => {
+    if (route.coords.length < 2) return [];
+
+    const line = turf.lineString(route.coords.map(coord => [coord.longitude, coord.latitude]));
+    const startPoint = turf.point([route.coords[0].longitude, route.coords[0].latitude]);
+
+    return paraderos
+      .map(paradero => {
+        const stopPoint = turf.point([paradero.latlng.longitude, paradero.latlng.latitude]);
+        const nearestOnRoute = turf.nearestPointOnLine(line, stopPoint);
+        const onRouteDistanceKm = turf.distance(startPoint, nearestOnRoute, { units: 'kilometers' });
+        const distToRouteKm = turf.distance(stopPoint, nearestOnRoute, { units: 'kilometers' });
+
+        return { paradero, onRouteDistanceKm, distToRouteKm };
+      })
+      .sort((a, b) => a.onRouteDistanceKm - b.onRouteDistanceKm);
+  };
+
+  const getBestStopForPoint = (
+    stopsOnRoute: ParaderoEnRuta[],
+    point: Coordenada,
+    excludeStopId?: number
+  ) => {
+    return stopsOnRoute
+      .filter(stop => stop.paradero.id !== excludeStopId)
+      .map(stop => {
+        const distanceToPointMeters = getDistanceMeters(point, stop.paradero.latlng);
+        const distanceToRouteMeters = stop.distToRouteKm * 1000;
+
+        return {
+          ...stop,
+          distanceToPointMeters,
+          // No bloquea por distancia: solo ayuda a escoger el paradero que tenga más sentido para esa ruta.
+          score: distanceToPointMeters + distanceToRouteMeters * 2,
+        };
+      })
+      .sort((a, b) => a.score - b.score)
+      .slice(0, CANDIDATES_PER_ROUTE);
+  };
+
+  const getStopsBetween = (
+    stopsOnRoute: ParaderoEnRuta[],
+    board: Paradero,
+    alight: Paradero
+  ) => {
+    const boardStop = stopsOnRoute.find(stop => stop.paradero.id === board.id);
+    const alightStop = stopsOnRoute.find(stop => stop.paradero.id === alight.id);
+
+    if (!boardStop || !alightStop) return [];
+
+    const from = Math.min(boardStop.onRouteDistanceKm, alightStop.onRouteDistanceKm);
+    const to = Math.max(boardStop.onRouteDistanceKm, alightStop.onRouteDistanceKm);
+
+    return stopsOnRoute
+      .filter(stop => stop.onRouteDistanceKm >= from && stop.onRouteDistanceKm <= to)
+      .sort((a, b) => a.distToRouteKm - b.distToRouteKm)
+      .slice(0, MAX_STOPS_TO_MARK)
+      .sort((a, b) => a.onRouteDistanceKm - b.onRouteDistanceKm)
+      .map(stop => stop.paradero);
+  };
+
+  const calculateBestSITPRoute = (origin: Coordenada, destination: Coordenada): PlanSITP | null => {
+    const options: PlanSITP[] = [];
+
+    rutas.forEach(route => {
+      if (route.coords.length < 2) return;
+
+      const stopsOnRoute = getRouteStops(route);
+      if (stopsOnRoute.length < 2) return;
+
+      const boardingCandidates = getBestStopForPoint(stopsOnRoute, origin);
+      const alightingCandidates = getBestStopForPoint(stopsOnRoute, destination);
+
+      boardingCandidates.forEach(boardingCandidate => {
+        alightingCandidates.forEach(alightingCandidate => {
+          if (boardingCandidate.paradero.id === alightingCandidate.paradero.id) return;
+
+          const busSegment = getRouteSegmentBetweenStops(
+            route,
+            boardingCandidate.paradero,
+            alightingCandidate.paradero
+          );
+
+          const stops = getStopsBetween(
+            stopsOnRoute,
+            boardingCandidate.paradero,
+            alightingCandidate.paradero
+          );
+
+          const walkToBoardMeters = getDistanceMeters(origin, boardingCandidate.paradero.latlng);
+          const walkToDestinationMeters = getDistanceMeters(destination, alightingCandidate.paradero.latlng);
+          const busDistanceMeters = getPathDistanceMeters(busSegment);
+          const totalDistanceMeters = walkToBoardMeters + busDistanceMeters + walkToDestinationMeters;
+
+          const estimatedTimeMinutes = Math.max(
+            1,
+            Math.round(
+              walkToBoardMeters / WALKING_METERS_PER_MINUTE +
+              busDistanceMeters / BUS_METERS_PER_MINUTE +
+              walkToDestinationMeters / WALKING_METERS_PER_MINUTE +
+              WAITING_TIME_MINUTES
+            )
+          );
+
+          const score =
+            estimatedTimeMinutes +
+            walkToBoardMeters / 150 +
+            walkToDestinationMeters / 150 +
+            boardingCandidate.distToRouteKm * 5 +
+            alightingCandidate.distToRouteKm * 5;
+
+          options.push({
+            route,
+            board: boardingCandidate.paradero,
+            alight: alightingCandidate.paradero,
+            stops,
+            busSegment,
+            walkToBoardMeters,
+            walkToDestinationMeters,
+            busDistanceMeters,
+            totalDistanceMeters,
+            estimatedTimeMinutes,
+            arrivalTime: getArrivalTimeFromMinutes(estimatedTimeMinutes),
+            score,
+          });
+        });
+      });
+    });
+
+    return options.sort((a, b) => a.score - b.score)[0] ?? null;
+  };
+
+  const applySITPPlan = async (plan: PlanSITP, origin: Coordenada, destination: Coordenada) => {
+    const [walkToBoardRoute, walkToDestinationRoute] = await Promise.all([
+      getRutaVialOSRM(origin, plan.board.latlng),
+      getRutaVialOSRM(plan.alight.latlng, destination),
+    ]);
+
+    const walkToBoardCoordinates = walkToBoardRoute?.coordinates ?? [origin, plan.board.latlng];
+    const walkToDestinationCoordinates = walkToDestinationRoute?.coordinates ?? [plan.alight.latlng, destination];
+
+    const walkToBoardMeters = walkToBoardRoute?.distance ?? plan.walkToBoardMeters;
+    const walkToDestinationMeters = walkToDestinationRoute?.distance ?? plan.walkToDestinationMeters;
+    const totalDistanceMeters = walkToBoardMeters + plan.busDistanceMeters + walkToDestinationMeters;
+
+    const estimatedTimeMinutes = Math.max(
+      1,
+      Math.round(
+        walkToBoardMeters / WALKING_METERS_PER_MINUTE +
+        plan.busDistanceMeters / BUS_METERS_PER_MINUTE +
+        walkToDestinationMeters / WALKING_METERS_PER_MINUTE +
+        WAITING_TIME_MINUTES
+      )
+    );
+
+    const finalPlan: PlanSITP = {
+      ...plan,
+      walkToBoardMeters,
+      walkToDestinationMeters,
+      totalDistanceMeters,
+      estimatedTimeMinutes,
+      arrivalTime: getArrivalTimeFromMinutes(estimatedTimeMinutes),
+    };
+
+    setSitpPlan(finalPlan);
+    setWalkToBoardSegment(walkToBoardCoordinates);
+    setBusSegment(finalPlan.busSegment);
+    setWalkToDestinationSegment(walkToDestinationCoordinates);
+
+    const allCoordinates = [
+      ...walkToBoardCoordinates,
+      ...finalPlan.busSegment,
+      ...walkToDestinationCoordinates,
+    ];
+
+    mapRef.current?.fitToCoordinates(allCoordinates, {
+      edgePadding: {
+        top: 130,
+        right: 60,
+        bottom: 160,
+        left: 60,
+      },
+      animated: true,
+    });
+  };
+
+  const handleSearchRoute = async () => {
     if (!currentLocation) {
-      Alert.alert('Ubicación no disponible', 'No se pudo obtener tu ubicación actual.');
+      Alert.alert('Ubicación requerida', 'Primero presiona el botón Localizarme.');
       return;
     }
 
-    mapRef.current?.animateToRegion({
+    if (!selectedDestination) {
+      Alert.alert('Destino requerido', 'Selecciona un destino.');
+      return;
+    }
+
+    setIsLoadingRoute(true);
+
+    const origin = {
       latitude: currentLocation.coords.latitude,
       longitude: currentLocation.coords.longitude,
-      latitudeDelta: 0.02,
-      longitudeDelta: 0.02,
-    }, 600);
+    };
+
+    const destination = selectedDestination.latlng;
+    const plan = calculateBestSITPRoute(origin, destination);
+
+    if (plan) {
+      await applySITPPlan(plan, origin, destination);
+      setSearchModalVisible(false);
+    } else {
+      Alert.alert('Ruta no encontrada', 'No se pudo calcular una ruta SITP con los datos actuales.');
+    }
+
+    setIsLoadingRoute(false);
+  };
+
+  const resetMap = () => {
+    setSelectedDestination(null);
+    setSitpPlan(null);
+    setWalkToBoardSegment([]);
+    setBusSegment([]);
+    setWalkToDestinationSegment([]);
   };
 
   return (
     <View style={styles.container}>
-      <MapView
-        ref={mapRef}
-        style={styles.map}
-        initialRegion={regionBogota}
-      >
+      <MapView ref={mapRef} style={styles.map} initialRegion={regionBogota}>
         {selectedLocalidad && (
           <Polygon
             coordinates={selectedLocalidad.coords}
@@ -299,254 +482,196 @@ export default function MapaScreen() {
           />
         )}
 
-        {currentLocation && boardingStop && (
+        {/* Tramo a pie: ubicación actual -> paradero donde subes */}
+        {walkToBoardSegment.length > 0 && (
           <Polyline
-            coordinates={[
-              { latitude: currentLocation.coords.latitude, longitude: currentLocation.coords.longitude },
-              boardingStop.latlng,
-            ]}
+            coordinates={walkToBoardSegment}
             strokeColor="#2ECC71"
             strokeWidth={4}
-            lineDashPattern={[6, 4]}
+            lineDashPattern={[8, 8]}
           />
         )}
 
-        {recommendedRoute && boardingStop && alightingStop && routeSegment.length > 0 && (
+        {/* Tramo SITP: paradero donde subes -> paradero donde bajas */}
+        {busSegment.length > 0 && sitpPlan && (
           <Polyline
-            coordinates={routeSegment}
-            strokeColor={recommendedRoute.color}
+            coordinates={busSegment}
+            strokeColor={sitpPlan.route.color ?? '#2196F3'}
             strokeWidth={6}
           />
         )}
 
-        {alightingStop && selectedDestination && (
+        {/* Tramo a pie: paradero donde bajas -> destino */}
+        {walkToDestinationSegment.length > 0 && sitpPlan && sitpPlan.walkToDestinationMeters > 5 && (
           <Polyline
-            coordinates={[
-              alightingStop.latlng,
-              selectedDestination.latlng,
-            ]}
-            strokeColor="#9B59B6"
+            coordinates={walkToDestinationSegment}
+            strokeColor="#2ECC71"
             strokeWidth={4}
-            lineDashPattern={[6, 4]}
+            lineDashPattern={[8, 8]}
           />
         )}
 
-        {paraderosFiltrados.map(paradero => (
-          <Marker
-            key={`paradero-${paradero.id}`}
-            coordinate={paradero.latlng}
-            title={paradero.nombre}
-            description={paradero.direccion ?? 'Paradero SITP'}
-            pinColor={selectedLocalidad ? '#007AFF' : 'blue'}
-          />
-        ))}
+        {/* Marcadores principales */}
+        {currentLocation && (
+          <Marker coordinate={currentLocation.coords} title="Tu ubicación" pinColor="green" />
+        )}
 
         {selectedDestination && (
-          <Marker
-            coordinate={selectedDestination.latlng}
-            title={selectedDestination.nombre}
-            description="Destino seleccionado"
-            pinColor="red"
-          />
+          <Marker coordinate={selectedDestination.latlng} title="Destino" description={selectedDestination.nombre} pinColor="red" />
         )}
 
-        {currentLocation && (
-          <Marker
-            coordinate={currentLocation.coords}
-            title="Tu ubicación"
-            description="Ubicación actual"
-            pinColor="green"
-          />
+        {sitpPlan && (
+          <>
+            <Marker
+              coordinate={sitpPlan.board.latlng}
+              title="Sube aquí"
+              description={`${sitpPlan.board.nombre} · SITP ${sitpPlan.route.id}`}
+              pinColor="#F39C12"
+            />
+            <Marker
+              coordinate={sitpPlan.alight.latlng}
+              title="Baja aquí"
+              description={`${sitpPlan.alight.nombre} · SITP ${sitpPlan.route.id}`}
+              pinColor="#9B59B6"
+            />
+          </>
         )}
 
-        {boardingStop && (
-          <Marker
-            coordinate={boardingStop.latlng}
-            title="Sube aquí"
-            description={boardingStop.nombre}
-            pinColor="#F39C12"
-          />
-        )}
+        {/* Paraderos sugeridos en el tramo de la ruta */}
+        {sitpPlan?.stops
+          .filter(stop => stop.id !== sitpPlan.board.id && stop.id !== sitpPlan.alight.id)
+          .map((stop, index) => (
+            <Marker
+              key={`route-stop-${stop.id}`}
+              coordinate={stop.latlng}
+              title={`Paradero ${index + 1} de la ruta`}
+              description={stop.nombre}
+              pinColor="#34495E"
+            />
+          ))}
 
-        {alightingStop && (
-          <Marker
-            coordinate={alightingStop.latlng}
-            title="Baja aquí"
-            description={alightingStop.nombre}
-            pinColor="#9B59B6"
-          />
-        )}
-
-        {paraderosInRoute.map(paradero => (
-          <Marker
-            key={`route-stop-${paradero.id}`}
-            coordinate={paradero.latlng}
-            title={paradero.nombre}
-            description="Parada en ruta"
-            pinColor="#3498DB"
-          />
+        {/* Paraderos de la localidad seleccionada */}
+        {paraderosVisibles.map(p => (
+          <Marker key={`p-${p.id}`} coordinate={p.latlng} title={p.nombre} pinColor="#007AFF" />
         ))}
       </MapView>
 
-      <View style={styles.headerOverlay}>
-        <Text style={styles.headerTitle}>Mapa de Bogotá - SITP</Text>
-        <Text style={styles.headerSubtitle}>
-          {recommendedRoute
-            ? `Mejor ruta: ${recommendedRoute.nombre} → ${selectedDestination?.nombre}`
-            : selectedLocalidad
-            ? `${paraderosFiltrados.length} paraderos en ${selectedLocalidad.nombre}`
-            : 'Selecciona una localidad'}
-        </Text>
+      {/* Info del SITP recomendado */}
+      {sitpPlan && selectedDestination && (
+        <View style={styles.selectedRouteInfo}>
+          <View style={styles.selectedRouteHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.selectedRouteName}>SITP {sitpPlan.route.id} - {sitpPlan.route.nombre}</Text>
+              <Text style={styles.selectedRouteDetail}>Sube en: {sitpPlan.board.nombre}</Text>
+              <Text style={styles.selectedRouteDetail}>Baja en: {sitpPlan.alight.nombre}</Text>
+              <Text style={styles.selectedRouteDetail}>Destino: {selectedDestination.nombre}</Text>
+            </View>
+            <Pressable onPress={resetMap}>
+              <Text style={styles.selectedRouteClose}>✕</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.routeMetricsRow}>
+            <Text style={styles.selectedRouteTime}>⏱️ {sitpPlan.estimatedTimeMinutes} min</Text>
+            <Text style={styles.selectedRouteTime}>📏 {formatDistance(sitpPlan.totalDistanceMeters)}</Text>
+            <Text style={styles.selectedRouteTime}>Llegada {sitpPlan.arrivalTime}</Text>
+          </View>
+
+          <Text style={styles.selectedRouteDetail}>
+            🚶 A pie: {formatDistance(sitpPlan.walkToBoardMeters + sitpPlan.walkToDestinationMeters)} · 🚌 SITP: {formatDistance(sitpPlan.busDistanceMeters)}
+          </Text>
+        </View>
+      )}
+
+      {/* Botones de acción */}
+      <View style={styles.floatingButtons}>
+        <Pressable
+          style={[styles.buttonAction, styles.buttonLocate, isLocating && styles.buttonDisabled]}
+          onPress={() => handleLocateUser(true)}
+          disabled={isLocating}
+        >
+          <Text style={styles.buttonText}>{isLocating ? 'Localizando...' : 'Localizarme'}</Text>
+        </Pressable>
+
+        <Pressable style={styles.buttonAction} onPress={() => setModalVisible(true)}>
+          <Text style={styles.buttonText}>Localidades</Text>
+        </Pressable>
+
+        <Pressable
+          style={[styles.buttonAction, styles.buttonSearch, isLoadingRoute && styles.buttonDisabled]}
+          onPress={() => setSearchModalVisible(true)}
+          disabled={isLoadingRoute}
+        >
+          <Text style={styles.buttonText}>{isLoadingRoute ? 'Calculando...' : 'Buscar SITP'}</Text>
+        </Pressable>
       </View>
 
-      <Pressable style={styles.buttonLocalidades} onPress={() => setModalVisible(true)}>
-        <Text style={styles.buttonLocalidadesText}>Seleccionar localidad</Text>
-      </Pressable>
-
-      <Pressable style={styles.buttonSearch} onPress={() => setSearchModalVisible(true)}>
-        <Text style={styles.buttonSearchText}>Buscar ruta</Text>
-      </Pressable>
-
-      <Pressable style={styles.buttonLocation} onPress={handleGoToCurrentLocation}>
-        <Text style={styles.buttonLocationText}>Mi ubicación</Text>
-      </Pressable>
-
-      {selectedLocalidad && (
-        <View style={styles.selectedLocalidadInfo}>
-          <Text style={styles.selectedLocalidadName}>
-            {selectedLocalidad.nombre} · {paraderosFiltrados.length} paraderos
-          </Text>
-          <Pressable onPress={() => setSelectedLocalidadId(null)}>
-            <Text style={styles.selectedLocalidadClose}>Cerrar</Text>
-          </Pressable>
-        </View>
-      )}
-
-      {recommendedRoute && selectedDestination && (
-        <View style={styles.selectedRouteInfo}>
-          <View>
-            <Text style={styles.selectedRouteName}>{recommendedRoute.nombre}</Text>
-            <Text style={styles.selectedRouteDetail}>
-              Sube en: {boardingStop?.nombre ?? 'N/A'}
-            </Text>
-            <Text style={styles.selectedRouteDetail}>
-              Baja en: {alightingStop?.nombre ?? 'N/A'}
-            </Text>
-            {estimatedTime && (
-              <Text style={styles.selectedRouteTime}>
-                ⏱️ Tiempo aprox: {estimatedTime} min
-              </Text>
-            )}
-          </View>
-          <Pressable onPress={() => { setRecommendedRoute(null); setRouteSegment([]); setSelectedDestination(null); setBoardingStop(null); setAlightingStop(null); setEstimatedTime(null); }}>
-            <Text style={styles.selectedRouteClose}>Cerrar</Text>
-          </Pressable>
-        </View>
-      )}
-
-      <Modal visible={modalVisible} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                {selectedLocalidadInModal ? `Paraderos en ${localidades.find(l => l.id === selectedLocalidadInModal)?.nombre}` : 'Selecciona una localidad'}
-              </Text>
-              <Pressable onPress={() => { setModalVisible(false); setSelectedLocalidadInModal(null); }}>
-                <Text style={styles.closeButton}>×</Text>
-              </Pressable>
-            </View>
-            {!selectedLocalidadInModal ? (
-              <ScrollView style={styles.localidadesList}>
-                <Pressable
-                  style={[
-                    styles.localidadItem,
-                    selectedLocalidadId === null && styles.localidadItemActive,
-                  ]}
-                  onPress={() => {
-                    setSelectedLocalidadId(null);
-                    setModalVisible(false);
-                  }}
-                >
-                  <Text style={styles.localidadName}>Todas las localidades</Text>
-                </Pressable>
-                {localidades.map(localidad => (
-                  <Pressable
-                    key={`localidad-${localidad.id}`}
-                    style={[
-                      styles.localidadItem,
-                      selectedLocalidadId === localidad.id && styles.localidadItemActive,
-                    ]}
-                    onPress={() => setSelectedLocalidadInModal(localidad.id)}
-                  >
-                    <View style={[styles.localidadColor, { backgroundColor: localidad.color }]} />
-                    <Text style={styles.localidadName}>{localidad.nombre}</Text>
-                  </Pressable>
-                ))}
-              </ScrollView>
-            ) : (
-              <ScrollView style={styles.paraderosList}>
-                {paraderosInModal.map(paradero => (
-                  <View key={`paradero-${paradero.id}`} style={styles.paraderoItem}>
-                    <Text style={styles.paraderoName}>{paradero.nombre}</Text>
-                    <Text style={styles.paraderoAddress}>{paradero.direccion}</Text>
-                  </View>
-                ))}
-                <Pressable
-                  style={styles.buttonAplicar}
-                  onPress={() => {
-                    setSelectedLocalidadId(selectedLocalidadInModal);
-                    setModalVisible(false);
-                    setSelectedLocalidadInModal(null);
-                  }}
-                >
-                  <Text style={styles.buttonAplicarText}>Aplicar selección</Text>
-                </Pressable>
-              </ScrollView>
-            )}
-          </View>
-        </View>
-      </Modal>
-
+      {/* Modal de Búsqueda */}
       <Modal visible={searchModalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Buscar ruta a destino</Text>
-              <Pressable onPress={() => setSearchModalVisible(false)}>
-                <Text style={styles.closeButton}>×</Text>
-              </Pressable>
-            </View>
+            <Text style={styles.modalTitle}>¿A dónde vas?</Text>
             <TextInput
               style={styles.searchInput}
-              placeholder="Buscar paradero destino..."
+              placeholder="Buscar destino..."
               value={destinationQuery}
               onChangeText={setDestinationQuery}
             />
-            <ScrollView style={styles.searchList}>
+            <ScrollView style={{ maxHeight: 300 }}>
               {searchParaderos
-                .filter(paradero =>
-                  paradero.nombre.toLowerCase().includes(destinationQuery.toLowerCase())
-                )
-                .map(paradero => (
+                .filter(p => p.nombre.toLowerCase().includes(destinationQuery.toLowerCase()))
+                .map(p => (
                   <Pressable
-                    key={`dest-${paradero.id}`}
+                    key={p.id}
                     style={[
                       styles.searchItem,
-                      selectedDestination?.id === paradero.id && styles.searchItemActive,
+                      selectedDestination?.id === p.id && { backgroundColor: '#E3F2FD' },
                     ]}
-                    onPress={() => setSelectedDestination(paradero)}
+                    onPress={() => setSelectedDestination(p)}
                   >
-                    <Text style={styles.searchItemText}>{paradero.nombre}</Text>
-                    <Text style={styles.searchItemSubtext}>{paradero.direccion}</Text>
+                    <Text>{p.nombre}</Text>
                   </Pressable>
                 ))}
             </ScrollView>
             <Pressable
-              style={[styles.buttonBuscar, !selectedDestination && styles.buttonDisabled]}
+              style={[styles.buttonBuscar, (!selectedDestination || isLoadingRoute) && { backgroundColor: '#CCC' }]}
               onPress={handleSearchRoute}
-              disabled={!selectedDestination}
+              disabled={!selectedDestination || isLoadingRoute}
             >
-              <Text style={styles.buttonBuscarText}>Buscar ruta</Text>
+              <Text style={styles.buttonBuscarText}>{isLoadingRoute ? 'Calculando SITP...' : 'Calcular SITP recomendado'}</Text>
+            </Pressable>
+            <Pressable onPress={() => setSearchModalVisible(false)} style={{ marginTop: 10, alignItems: 'center' }}>
+              <Text style={{ color: 'red' }}>Cancelar</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal Localidades */}
+      <Modal visible={modalVisible} animationType="fade" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Selecciona Localidad</Text>
+            <ScrollView>
+              {localidades.map(l => (
+                <Pressable
+                  key={l.id}
+                  style={[
+                    styles.searchItem,
+                    selectedLocalidadInModal === l.id && { backgroundColor: '#E8F5E9' },
+                  ]}
+                  onPress={() => {
+                    setSelectedLocalidadInModal(l.id);
+                    setSelectedLocalidadId(l.id);
+                    setModalVisible(false);
+                  }}
+                >
+                  <Text>{l.nombre}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <Pressable onPress={() => setModalVisible(false)} style={{ padding: 10 }}>
+              <Text>Cerrar</Text>
             </Pressable>
           </View>
         </View>
@@ -556,134 +681,115 @@ export default function MapaScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  map: { width: '100%', height: '100%' },
-  headerOverlay: {
-    position: 'absolute',
-    top: 24,
-    left: 16,
-    right: 16,
-    backgroundColor: 'rgba(255,255,255,0.95)',
-    borderRadius: 12,
-    padding: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 6,
-    elevation: 3,
+  container: {
+    flex: 1,
   },
-  headerTitle: { fontSize: 18, fontWeight: '700', color: '#1A472A', marginBottom: 4 },
-  headerSubtitle: { fontSize: 12, color: '#666' },
-  buttonLocalidades: {
+  map: {
+    width: '100%',
+    height: '100%',
+  },
+  floatingButtons: {
     position: 'absolute',
-    bottom: 24,
+    bottom: 30,
     right: 16,
+    gap: 10,
+  },
+  buttonAction: {
     backgroundColor: '#4CAF50',
     paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  buttonLocalidadesText: { fontSize: 14, fontWeight: '600', color: '#FFFFFF' },
-  buttonSearch: {
-    position: 'absolute',
-    bottom: 80,
-    right: 16,
-    backgroundColor: '#2196F3',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  buttonSearchText: { fontSize: 14, fontWeight: '600', color: '#FFFFFF' },
-  buttonLocation: {
-    position: 'absolute',
-    bottom: 136,
-    right: 16,
-    backgroundColor: '#16A085',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  buttonLocationText: { fontSize: 14, fontWeight: '600', color: '#FFFFFF' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingTop: 16, maxHeight: '80%' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#E0E0E0' },
-  modalTitle: { fontSize: 18, fontWeight: '700', color: '#1A472A' },
-  closeButton: { fontSize: 24, color: '#666' },
-  localidadesList: { paddingHorizontal: 12, paddingVertical: 8 },
-  localidadItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 12, marginVertical: 4, borderRadius: 8, backgroundColor: '#F5F5F5' },
-  localidadItemActive: { backgroundColor: '#E8F5E9' },
-  localidadColor: { width: 12, height: 12, borderRadius: 6, marginRight: 12 },
-  localidadName: { fontSize: 14, fontWeight: '500', color: '#333', flex: 1 },
-  paraderosList: { paddingHorizontal: 12, paddingVertical: 8 },
-  paraderoItem: { paddingVertical: 8, paddingHorizontal: 12, marginVertical: 4, borderRadius: 8, backgroundColor: '#F0F0F0' },
-  paraderoName: { fontSize: 14, fontWeight: '500', color: '#333' },
-  paraderoAddress: { fontSize: 12, color: '#666' },
-  buttonAplicar: { marginVertical: 10, backgroundColor: '#4CAF50', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
-  buttonAplicarText: { fontSize: 16, fontWeight: '600', color: '#FFFFFF' },
-  searchInput: { marginHorizontal: 20, marginVertical: 10, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#DDD', borderRadius: 8, fontSize: 16 },
-  searchList: { paddingHorizontal: 12, maxHeight: 200 },
-  searchItem: { paddingVertical: 12, paddingHorizontal: 12, marginVertical: 4, borderRadius: 8, backgroundColor: '#F5F5F5' },
-  searchItemActive: { backgroundColor: '#E3F2FD' },
-  searchItemText: { fontSize: 14, fontWeight: '500', color: '#333' },
-  searchItemSubtext: { fontSize: 12, color: '#666' },
-  buttonBuscar: { marginHorizontal: 20, marginVertical: 10, backgroundColor: '#4CAF50', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
-  buttonDisabled: { backgroundColor: '#CCC' },
-  buttonBuscarText: { fontSize: 16, fontWeight: '600', color: '#FFFFFF' },
-  selectedLocalidadInfo: {
-    position: 'absolute',
-    bottom: 24,
-    left: 16,
-    right: 16,
-    backgroundColor: '#1A472A',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    borderRadius: 25,
+    elevation: 5,
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
   },
-  selectedLocalidadName: { fontSize: 14, fontWeight: '600', color: '#FFFFFF' },
-  selectedLocalidadClose: { fontSize: 18, color: '#FFFFFF', fontWeight: '600' },
+  buttonLocate: {
+    backgroundColor: '#FF9800',
+  },
+  buttonSearch: {
+    backgroundColor: '#2196F3',
+  },
+  buttonDisabled: {
+    backgroundColor: '#9E9E9E',
+  },
+  buttonText: {
+    color: 'white',
+    fontWeight: 'bold',
+  },
   selectedRouteInfo: {
     position: 'absolute',
-    bottom: 80,
+    top: 50,
     left: 16,
     right: 16,
     backgroundColor: '#2196F3',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    padding: 14,
     borderRadius: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
+    elevation: 10,
   },
-  selectedRouteName: { fontSize: 14, fontWeight: '600', color: '#FFFFFF' },
-  selectedRouteDetail: { fontSize: 12, color: '#E8F6F3', marginTop: 4 },
-  selectedRouteTime: { fontSize: 13, fontWeight: '600', color: '#FFD700', marginTop: 6 },
-  selectedRouteClose: { fontSize: 18, color: '#FFFFFF', fontWeight: '600' },
+  selectedRouteHeader: {
+    flexDirection: 'row',
+  },
+  selectedRouteName: {
+    color: 'white',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  routeMetricsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 8,
+  },
+  selectedRouteTime: {
+    color: '#FFD700',
+    fontWeight: 'bold',
+  },
+  selectedRouteDetail: {
+    color: 'white',
+    fontSize: 12,
+    marginTop: 3,
+  },
+  selectedRouteClose: {
+    color: 'white',
+    fontSize: 20,
+    marginLeft: 10,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 15,
+  },
+  searchInput: {
+    borderWidth: 1,
+    borderColor: '#DDD',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+  },
+  searchItem: {
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EEE',
+  },
+  buttonBuscar: {
+    backgroundColor: '#4CAF50',
+    padding: 15,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  buttonBuscarText: {
+    color: 'white',
+    fontWeight: 'bold',
+  },
 });
