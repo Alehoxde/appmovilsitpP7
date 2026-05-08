@@ -1,0 +1,223 @@
+// assets/data/localidades-data.ts
+export const localidades = [
+  {
+    id: 1,
+    nombre: "Usaquén",
+    color: "#E74C3C",
+    coords: [
+      { latitude: 4.7200, longitude: -74.0350 },
+      { latitude: 4.7200, longitude: -74.0150 },
+      { latitude: 4.7400, longitude: -74.0150 },
+      { latitude: 4.7400, longitude: -74.0350 },
+    ],
+  },
+  {
+    id: 2,
+    nombre: "Chapinero",
+    color: "#3498DB",
+    coords: [
+      { latitude: 4.6800, longitude: -74.0450 },
+      { latitude: 4.6800, longitude: -74.0250 },
+      { latitude: 4.7000, longitude: -74.0250 },
+      { latitude: 4.7000, longitude: -74.0450 },
+    ],
+  },
+  {
+    id: 3,
+    nombre: "Santa Fe",
+    color: "#2ECC71",
+    coords: [
+      { latitude: 4.6400, longitude: -74.0700 },
+      { latitude: 4.6400, longitude: -74.0500 },
+      { latitude: 4.6600, longitude: -74.0500 },
+      { latitude: 4.6600, longitude: -74.0700 },
+    ],
+  },
+  {
+    id: 4,
+    nombre: "San Cristóbal",
+    color: "#F39C12",
+    coords: [
+      { latitude: 4.6200, longitude: -74.1050 },
+      { latitude: 4.6200, longitude: -74.0850 },
+      { latitude: 4.6400, longitude: -74.0850 },
+      { latitude: 4.6400, longitude: -74.1050 },
+    ],
+  },
+  {
+    id: 5,
+    nombre: "Useme",
+    color: "#9B59B6",
+    coords: [
+      { latitude: 4.5800, longitude: -74.1200 },
+      { latitude: 4.5800, longitude: -74.1000 },
+      { latitude: 4.6000, longitude: -74.1000 },
+      { latitude: 4.6000, longitude: -74.1200 },
+    ],
+  },
+  {
+    id: 6,
+    nombre: "Tunjuelito",
+    color: "#1ABC9C",
+    coords: [
+      { latitude: 4.5500, longitude: -74.1100 },
+      { latitude: 4.5500, longitude: -74.0900 },
+      { latitude: 4.5700, longitude: -74.0900 },
+      { latitude: 4.5700, longitude: -74.1100 },
+    ],
+  },
+  {
+    id: 7,
+    nombre: "Bosa",
+    color: "#E67E22",
+    coords: [
+      { latitude: 4.6200, longitude: -74.2000 },
+      { latitude: 4.6200, longitude: -74.1800 },
+      { latitude: 4.6400, longitude: -74.1800 },
+      { latitude: 4.6400, longitude: -74.2000 },
+    ],
+  },
+  {
+    id: 8,
+    nombre: "Kennedy",
+    color: "#34495E",
+    coords: [
+      { latitude: 4.5800, longitude: -74.1900 },
+      { latitude: 4.5800, longitude: -74.1700 },
+      { latitude: 4.6000, longitude: -74.1700 },
+      { latitude: 4.6000, longitude: -74.1900 },
+    ],
+  },
+  {
+    id: 9,
+    nombre: "Fontibón",
+    color: "#C0392B",
+    coords: [
+      { latitude: 4.6900, longitude: -74.2200 },
+      { latitude: 4.6900, longitude: -74.2000 },
+      { latitude: 4.7100, longitude: -74.2000 },
+      { latitude: 4.7100, longitude: -74.2200 },
+    ],
+  },
+  {
+    id: 10,
+    nombre: "Engativá",
+    color: "#16A085",
+    coords: [
+      { latitude: 4.7300, longitude: -74.1800 },
+      { latitude: 4.7300, longitude: -74.1600 },
+      { latitude: 4.7500, longitude: -74.1600 },
+      { latitude: 4.7500, longitude: -74.1800 },
+    ],
+  },
+  {
+    id: 11,
+    nombre: "Suba",
+    color: "#D35400",
+    coords: [
+      { latitude: 4.7600, longitude: -74.1500 },
+      { latitude: 4.7600, longitude: -74.1300 },
+      { latitude: 4.7800, longitude: -74.1300 },
+      { latitude: 4.7800, longitude: -74.1500 },
+    ],
+  },
+  {
+    id: 12,
+    nombre: "Barrios Unidos",
+    color: "#27AE60",
+    coords: [
+      { latitude: 4.6900, longitude: -74.0900 },
+      { latitude: 4.6900, longitude: -74.0700 },
+      { latitude: 4.7100, longitude: -74.0700 },
+      { latitude: 4.7100, longitude: -74.0900 },
+    ],
+  },
+  {
+    id: 13,
+    nombre: "Teusaquillo",
+    color: "#2980B9",
+    coords: [
+      { latitude: 4.6600, longitude: -74.0600 },
+      { latitude: 4.6600, longitude: -74.0400 },
+      { latitude: 4.6800, longitude: -74.0400 },
+      { latitude: 4.6800, longitude: -74.0600 },
+    ],
+  },
+  {
+    id: 14,
+    nombre: "Los Mártires",
+    color: "#8E44AD",
+    coords: [
+      { latitude: 4.6300, longitude: -74.1000 },
+      { latitude: 4.6300, longitude: -74.0800 },
+      { latitude: 4.6500, longitude: -74.0800 },
+      { latitude: 4.6500, longitude: -74.1000 },
+    ],
+  },
+  {
+    id: 15,
+    nombre: "Antonio Nariño",
+    color: "#16A085",
+    coords: [
+      { latitude: 4.6100, longitude: -74.1200 },
+      { latitude: 4.6100, longitude: -74.1000 },
+      { latitude: 4.6300, longitude: -74.1000 },
+      { latitude: 4.6300, longitude: -74.1200 },
+    ],
+  },
+  {
+    id: 16,
+    nombre: "Puente Aranda",
+    color: "#D68910",
+    coords: [
+      { latitude: 4.6300, longitude: -74.1400 },
+      { latitude: 4.6300, longitude: -74.1200 },
+      { latitude: 4.6500, longitude: -74.1200 },
+      { latitude: 4.6500, longitude: -74.1400 },
+    ],
+  },
+  {
+    id: 17,
+    nombre: "La Candelaria",
+    color: "#C0392B",
+    coords: [
+      { latitude: 4.6100, longitude: -74.0800 },
+      { latitude: 4.6100, longitude: -74.0600 },
+      { latitude: 4.6300, longitude: -74.0600 },
+      { latitude: 4.6300, longitude: -74.0800 },
+    ],
+  },
+  {
+    id: 18,
+    nombre: "Rafael Uribe Uribe",
+    color: "#27AE60",
+    coords: [
+      { latitude: 4.5700, longitude: -74.0700 },
+      { latitude: 4.5700, longitude: -74.0500 },
+      { latitude: 4.5900, longitude: -74.0500 },
+      { latitude: 4.5900, longitude: -74.0700 },
+    ],
+  },
+  {
+    id: 19,
+    nombre: "Ciudad Bolívar",
+    color: "#E74C3C",
+    coords: [
+      { latitude: 4.5200, longitude: -74.1300 },
+      { latitude: 4.5200, longitude: -74.1100 },
+      { latitude: 4.5400, longitude: -74.1100 },
+      { latitude: 4.5400, longitude: -74.1300 },
+    ],
+  },
+  {
+    id: 20,
+    nombre: "Sumapaz",
+    color: "#3498DB",
+    coords: [
+      { latitude: 4.4800, longitude: -74.2300 },
+      { latitude: 4.4800, longitude: -74.2100 },
+      { latitude: 4.5000, longitude: -74.2100 },
+      { latitude: 4.5000, longitude: -74.2300 },
+    ],
+  },
+];

@@ -1,24 +1,15 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+// app/_layout.tsx
 import { Stack } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
-import 'react-native-reanimated';
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
-
-export const unstable_settings = {
-  anchor: '(tabs)',
-};
-
-export default function RootLayout() {
-  const colorScheme = useColorScheme();
-
+export default function Layout() {
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
-      </Stack>
-      <StatusBar style="auto" />
-    </ThemeProvider>
+    <Stack>
+      {/* Esta es la pantalla de bienvenida */}
+      <Stack.Screen name="index" options={{ title: 'Bienvenida', headerShown: false }} />
+      {/* Esta es la nueva pantalla del mapa */}
+      <Stack.Screen name="mapa" options={{ title: 'Mapa de Bogotá' }} />
+      {/* Esta es una pantalla de modal que veo que ya tienes */}
+      <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Información' }} />
+    </Stack>
   );
 }
